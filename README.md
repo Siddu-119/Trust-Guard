@@ -1,6 +1,6 @@
 # TrustGuard – Post-Quantum Zero Trust Security Platform
 
-**Track 4 Hackathon Prototype** — Protecting confidential messages, cryptographic keys, and service access when keys rotate, devices are lost/revoked, or user permissions change.
+Protecting confidential messages, cryptographic keys, and service access when keys rotate, devices are lost/revoked, or user permissions change.
 
 ---
 
