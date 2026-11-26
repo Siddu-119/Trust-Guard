@@ -518,6 +518,58 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         )
         return {"user_id": user_id, "role": body.role}
 
+    @app.delete("/api/users/{user_id}")
+    def delete_user_endpoint(
+        user_id: str,
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> dict[str, Any]:
+        enforce_server_permission(conn, ctx, resource="users", action="admin")
+        if user_id == ctx.user_id:
+            raise HTTPException(status_code=400, detail="Cannot delete your own Admin account.")
+
+        target = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if target["role"] == "Admin":
+            raise HTTPException(status_code=400, detail="Admin accounts cannot be deleted.")
+
+        # Revoke all active/retired keys owned by the deleted employee across Nodes A/B/C
+        user_keys = conn.execute(
+            "SELECT key_id FROM crypto_keys WHERE owner_id = ? AND status != 'REVOKED'",
+            (user_id,),
+        ).fetchall()
+        for kr in user_keys:
+            revoke_key_entry(
+                conn,
+                key_id=kr["key_id"],
+                actor_id=ctx.user_id,
+                reason=f"Owner '{target['username']}' deleted by Admin",
+            )
+
+        # Deleting user cascades devices, node_revocations, resource_permissions, and messaging_sessions
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+        record_audit_event(
+            conn,
+            actor_id=ctx.user_id,
+            action="USER_DELETED",
+            resource=user_id,
+            result="SUCCESS",
+            metadata={
+                "deleted_username": target["username"],
+                "deleted_role": target["role"],
+                "keys_revoked": len(user_keys),
+            },
+        )
+        return {
+            "deleted_user_id": user_id,
+            "deleted_username": target["username"],
+            "deleted_role": target["role"],
+            "keys_revoked": len(user_keys),
+        }
+
     @app.post("/api/users/{user_id}/permissions")
     def set_user_permission(
         user_id: str,

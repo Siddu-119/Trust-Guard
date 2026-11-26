@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ShieldCheck, UserPlus } from "lucide-react";
+import { ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { apiRequest } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { AccessDecision, DeviceRecord, Role, UserRecord } from "../types";
@@ -46,6 +46,14 @@ export const UsersPage: React.FC<Props> = ({ token, deviceId }) => {
       setUsers(u);
       setDevices(d);
       setDecisions(dec);
+      if (u.length > 0 && !u.some((usr) => usr.user_id === permUserId)) {
+        setPermUserId(u[0].user_id);
+      }
+      if (u.length > 0 && !u.some((usr) => usr.user_id === chkUserId)) {
+        setChkUserId(u[0].user_id);
+        const dev = d.find((dv) => dv.owner_id === u[0].user_id);
+        setChkDeviceId(dev ? dev.device_id : "");
+      }
     } catch (err: any) {
       setFeedback({ type: "err", msg: err.message });
     }
@@ -94,6 +102,24 @@ export const UsersPage: React.FC<Props> = ({ token, deviceId }) => {
         body: { role: newRole },
       });
       setFeedback({ type: "ok", msg: `Updated role for ${userId} to ${newRole}.` });
+      await loadAll();
+    } catch (err: any) {
+      setFeedback({ type: "err", msg: err.message });
+    }
+  };
+
+  const handleDeleteUser = async (targetUser: UserRecord) => {
+    setFeedback(null);
+    try {
+      const res = await apiRequest<any>(`/api/users/${targetUser.user_id}`, {
+        method: "DELETE",
+        token,
+        deviceId,
+      });
+      setFeedback({
+        type: "ok",
+        msg: `Deleted ${res.deleted_role} '${res.deleted_username}' and revoked ${res.keys_revoked} key(s).`,
+      });
       await loadAll();
     } catch (err: any) {
       setFeedback({ type: "err", msg: err.message });
@@ -387,6 +413,7 @@ export const UsersPage: React.FC<Props> = ({ token, deviceId }) => {
                 <th className="px-4 py-3">Role (Change)</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Explicit Resource Overrides</th>
+                <th className="px-4 py-3">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
@@ -432,6 +459,20 @@ export const UsersPage: React.FC<Props> = ({ token, deviceId }) => {
                           </span>
                         ))}
                       </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {u.role !== "Admin" ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteUser(u)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-600/20 hover:bg-rose-600/35 text-rose-300 border border-rose-500/30 font-medium"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
+                      </button>
+                    ) : (
+                      <span className="text-slate-500 font-mono">Protected</span>
                     )}
                   </td>
                 </tr>

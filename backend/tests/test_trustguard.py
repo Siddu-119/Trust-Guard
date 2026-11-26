@@ -811,3 +811,40 @@ def test_21_concurrent_requests_no_500(client_and_settings):
         codes = list(pool.map(hit, endpoints))
 
     assert all(code == 200 for code in codes), f"Unexpected status codes: {codes}"
+
+
+# 22. Admin delete employee (server-side RBAC, key revocation, token invalidation, audit integrity)
+def test_22_admin_delete_employee_and_authz(client_and_settings):
+    client, _, _, _ = client_and_settings
+    admin = _login(client, "alice.admin", "AdminPass#2026!")
+    bob = _login(client, "bob.eng", "EmpPass#2026!")
+    carol = _login(client, "carol.viewer", "ViewPass#2026!")
+
+    # Bob sends a message to Alice before being deleted
+    msg = client.post(
+        "/api/messages/send",
+        headers=_headers(bob["access_token"]),
+        json={"recipient_id": "usr-alice", "plaintext": "Message before offboarding"},
+    )
+    assert msg.status_code == 200
+
+    # Non-admin cannot delete an employee
+    assert client.delete("/api/users/usr-bob", headers=_headers(carol["access_token"])).status_code == 403
+    assert client.delete("/api/users/usr-carol", headers=_headers(bob["access_token"])).status_code == 403
+
+    # Admin cannot delete self or another Admin
+    assert client.delete("/api/users/usr-alice", headers=_headers(admin["access_token"])).status_code == 400
+
+    # Admin deletes Employee (Bob) -> succeeds, revokes Bob's keys, cascades devices
+    del_resp = client.delete("/api/users/usr-bob", headers=_headers(admin["access_token"]))
+    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.json()["deleted_username"] == "bob.eng"
+    assert del_resp.json()["keys_revoked"] >= 1
+
+    # Bob's existing token is immediately rejected (401)
+    assert client.get("/api/messages", headers=_headers(bob["access_token"])).status_code == 401
+
+    # Alice still sees historical message from deleted Bob & audit chain remains valid
+    alice_msgs = client.get("/api/messages", headers=_headers(admin["access_token"])).json()
+    assert any(m["plaintext"] == "Message before offboarding" for m in alice_msgs)
+    assert client.get("/api/audit/verify", headers=_headers(admin["access_token"])).json()["valid"] is True

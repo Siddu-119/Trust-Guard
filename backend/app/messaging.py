@@ -767,10 +767,12 @@ def list_messages_for_user(
     if role == "Admin":
         rows = conn.execute(
             """
-            SELECT m.*, su.username AS sender_username, ru.username AS recipient_username
+            SELECT m.*,
+                   COALESCE(su.username, m.sender_id || ' (deleted)') AS sender_username,
+                   COALESCE(ru.username, m.recipient_id || ' (deleted)') AS recipient_username
             FROM secure_messages m
-            JOIN users su ON su.user_id = m.sender_id
-            JOIN users ru ON ru.user_id = m.recipient_id
+            LEFT JOIN users su ON su.user_id = m.sender_id
+            LEFT JOIN users ru ON ru.user_id = m.recipient_id
             ORDER BY m.created_at DESC
             LIMIT 100
             """
@@ -778,10 +780,12 @@ def list_messages_for_user(
     else:
         rows = conn.execute(
             """
-            SELECT m.*, su.username AS sender_username, ru.username AS recipient_username
+            SELECT m.*,
+                   COALESCE(su.username, m.sender_id || ' (deleted)') AS sender_username,
+                   COALESCE(ru.username, m.recipient_id || ' (deleted)') AS recipient_username
             FROM secure_messages m
-            JOIN users su ON su.user_id = m.sender_id
-            JOIN users ru ON ru.user_id = m.recipient_id
+            LEFT JOIN users su ON su.user_id = m.sender_id
+            LEFT JOIN users ru ON ru.user_id = m.recipient_id
             WHERE m.sender_id = ? OR m.recipient_id = ?
             ORDER BY m.created_at DESC
             LIMIT 100
