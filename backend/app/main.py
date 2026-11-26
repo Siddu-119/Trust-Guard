@@ -630,7 +630,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(get_db),
         settings: Settings = Depends(get_cfg),
     ) -> dict[str, Any]:
-        enforce_server_permission(conn, ctx, resource="keys", action="rotate", destination_service="node-a")
+        enforce_server_permission(conn, ctx, resource="keys", action="rotate")
         return rotate_key(
             conn,
             settings,
@@ -751,7 +751,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(get_db),
         settings: Settings = Depends(get_cfg),
     ) -> list[dict[str, Any]]:
-        enforce_server_permission(conn, ctx, resource="messages", action="read", destination_service="node-b")
+        enforce_server_permission(conn, ctx, resource="messages", action="read")
         return list_messages_for_user(conn, settings, user_id=ctx.user_id, role=ctx.role)
 
     @app.post("/api/messages/create-envelope")

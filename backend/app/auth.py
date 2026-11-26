@@ -555,7 +555,7 @@ def enforce_server_permission(
     resource: str,
     action: str,
     source_service: str = "client",
-    destination_service: str = "node-a",
+    destination_service: str = "control-plane",
 ) -> None:
     """Enforce server-side authorization and record every allow/deny decision."""
     res = evaluate_zero_trust_access(

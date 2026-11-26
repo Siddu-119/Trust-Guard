@@ -22,12 +22,13 @@ from .audit import utc_now_iso
 
 # Allowed Zero-Trust directed service-to-service topology edges
 ALLOWED_SERVICE_EDGES: dict[str, set[str]] = {
-    "client": {"node-a"},
+    "client": {"node-a", "control-plane"},
+    "control-plane": {"control-plane", "node-a", "node-b", "node-c", "key-vault"},
     "node-a": {"node-a", "node-b", "node-c", "key-vault"},
     "node-b": {"node-b", "node-c"},
     "node-c": {"node-c"},
     "key-vault": set(),
-    "system": {"node-a", "node-b", "node-c", "key-vault"},
+    "system": {"control-plane", "node-a", "node-b", "node-c", "key-vault"},
 }
 
 ADMIN_ONLY_ACTIONS = {"rotate", "revoke", "admin", "backup", "restore", "tamper-test", "manage-nodes"}
