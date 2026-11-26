@@ -251,22 +251,22 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         [
             Paragraph("Backend &amp; DB", tc),
             Paragraph("Python 3.14, FastAPI 0.165.0, Pydantic 2.14.4, SQLite (WAL), per-request DB connections", tc),
-            Paragraph("Cold init ~518 ms; 32 concurrent calls 0 errors", tc),
+            Paragraph("Revocation 1.55 ms med (1.26-2.53 ms, 0.05-0.09 ms/node); 32 concurrent calls 0 errors", tc),
         ],
         [
             Paragraph("Cryptography", tc),
             Paragraph("pqcrypto 1.0.0 (ML-KEM-768, ML-DSA-65), cryptography 50.0.2 (HKDF-SHA256, AES-256-GCM)", tc),
-            Paragraph("Private keys wrapped at rest; never logged/returned", tc),
+            Paragraph("Grace period: 1 version (8h token TTL); private keys wrapped at rest", tc),
         ],
         [
             Paragraph("Threat Engine", tc),
-            Paragraph("Pure Python rules + directed service graph + bisect window sorting (+-300s clock skew)", tc),
-            Paragraph("1,058 logs: P=1.0, R=0.9565, F1=0.9778, 0.0 FP/1k", tc),
+            Paragraph("Pure Python rules + directed service graph + bisect window sorting (+-300s timing range)", tc),
+            Paragraph("1,058 logs: F1=0.9778 (P=1.0, R=0.9565), med alert 0.0014 ms, 0.0 FP/1k", tc),
         ],
         [
             Paragraph("Frontend &amp; Tests", tc),
             Paragraph("React 18.3, TypeScript 5.7, Tailwind CSS 4.1, Recharts 2.15, pytest 9.2.0", tc),
-            Paragraph("22 / 22 automated tests pass; offline (~5.7 MB RAM)", tc),
+            Paragraph("22 / 22 automated tests pass; offline", tc),
         ],
     ]
     stbl = Table(stack_rows, colWidths=[28 * mm, 92 * mm, 62 * mm])

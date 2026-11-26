@@ -137,10 +137,11 @@ Evaluated deterministically across **1,058 labelled synthetic events** (`1,012` 
 
 | Metric | Measured Result |
 | :--- | :--- |
-| **Precision** | `1.0` (`44 TP`, `0 FP`) |
-| **Recall** | `0.9565` (`44/46`, `2 FN` slow-recon boundary probes) |
-| **F1 Score** | `0.9778` |
-| **Median Alert Time** | `0.0064 ms` |
+| **Grace Period (Key Rotation Cutoff)** | `1` previous version (`TRUSTGUARD_KEY_GRACE_VERSIONS=1`; token TTL `8h`) |
+| **Revocation Time (Nodes A/B/C + Audit)** | `1.55 ms` median (`1.26–2.53 ms` end-to-end; `0.05–0.09 ms` per-node update) |
+| **Timing Range (Clock Skew / Out-of-Order)** | `±300s` (`±5 min`; `>= 1s` lag flagged `OUT_OF_ORDER_UNCERTAIN`) |
+| **Precision / Recall / F1 Score** | `1.0` / `0.9565` / **`0.9778`** (`44 TP`, `0 FP`, `2 FN` slow-recon boundary probes) |
+| **Median Time to Alert** | `0.0014 ms` |
 | **False Alerts / 1,000 Benign Events** | `0.0` |
 
 ---
@@ -332,7 +333,7 @@ cd frontend && npm run build
 │   │   ├── backup.py                     # AES-GCM + ML-DSA-65 backups & safe restore
 │   │   └── main.py                       # FastAPI REST endpoints & startup crash recovery
 │   └── tests/
-│       └── test_trustguard.py            # 20 automated security tests
+│       └── test_trustguard.py            # 22 automated security tests
 └── frontend/
     ├── package.json
     ├── vite.config.ts
