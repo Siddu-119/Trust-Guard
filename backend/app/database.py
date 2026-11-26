@@ -5,6 +5,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
+
+from fastapi import Request
 
 from .audit import record_audit_event
 from .config import Settings
@@ -228,14 +231,28 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection configured with Row factory and foreign keys."""
+    """Open a SQLite connection configured with Row factory, WAL mode, and busy timeout."""
     if db_path != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(db_path, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+def get_db_session(request: Request) -> Iterator[sqlite3.Connection]:
+    """Per-request SQLite connection dependency (prevents cross-thread connection sharing)."""
+    db_path = request.app.state.settings.db_path
+    if db_path == ":memory:":
+        yield request.app.state.conn
+        return
+    conn = get_connection(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_database(conn: sqlite3.Connection, settings: Settings) -> None:

@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from .audit import record_audit_event, utc_now_iso
 from .config import Settings
 from .crypto import verify_password
+from .database import get_db_session
 from .threat_detection import SecurityEventInput, process_and_store_event
 
 VALID_ROLES = {"Admin", "Employee", "Viewer"}
@@ -484,6 +485,7 @@ def get_auth_context(
     request: Request,
     authorization: str | None = Header(default=None),
     x_device_id: str | None = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db_session),
 ) -> AuthContext:
     """FastAPI dependency verifying bearer token, user status, and active device."""
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -494,7 +496,6 @@ def get_auth_context(
 
     token = authorization.split(" ", 1)[1].strip()
     settings: Settings = request.app.state.settings
-    conn: sqlite3.Connection = request.app.state.conn
 
     claims = verify_access_token(settings, token)
     user = conn.execute(

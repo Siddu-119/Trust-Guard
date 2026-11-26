@@ -11,6 +11,7 @@ import bisect
 import json
 import sqlite3
 import statistics
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -88,6 +89,7 @@ class DeterministicThreatEngine:
     """Stateful deterministic rule + directed-graph analyzer with clock-skew & reordering support."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         # Sorted lists of (normalized_ts, event_id, value)
         self._user_services: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
         self._user_denials: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
@@ -101,6 +103,10 @@ class DeterministicThreatEngine:
 
     def evaluate_event(self, event: SecurityEventInput) -> list[dict[str, Any]]:
         """Evaluate one security event with clock normalization and out-of-order window sorting."""
+        with self._lock:
+            return self._evaluate_event_locked(event)
+
+    def _evaluate_event_locked(self, event: SecurityEventInput) -> list[dict[str, Any]]:
         start_ns = time.perf_counter_ns()
         raw_ts = _parse_ts(event.event_time)
         offset = float(event.clock_offset_seconds)

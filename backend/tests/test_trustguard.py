@@ -783,3 +783,31 @@ def test_20_session_resumption_and_peer_takeover_rejection(client_and_settings):
     )
     assert hijack_alice.status_code == 403
     assert "SESSION_TAKEOVER_BLOCKED" in hijack_alice.json()["detail"]
+
+
+# 21. Concurrent browser Promise.all requests must not cause SQLite 500 errors
+def test_21_concurrent_requests_no_500(client_and_settings):
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, _, _, _ = client_and_settings
+    admin = _login(client, "alice.admin", "AdminPass#2026!")
+    hdrs = _headers(admin["access_token"])
+
+    endpoints = [
+        "/api/devices",
+        "/api/users",
+        "/api/nodes",
+        "/api/dashboard/overview",
+        "/api/threats/alerts",
+        "/api/threats/graph",
+        "/api/messages",
+        "/api/messages/delivery-attempts",
+    ] * 4  # 32 concurrent requests
+
+    def hit(path: str) -> int:
+        return client.get(path, headers=hdrs).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(hit, endpoints))
+
+    assert all(code == 200 for code in codes), f"Unexpected status codes: {codes}"

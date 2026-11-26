@@ -37,7 +37,7 @@ from .crypto import (
     hash_password,
     wrap_private_key,
 )
-from .database import get_connection, init_database
+from .database import get_connection, get_db_session, init_database
 from .devices import list_devices, register_device, revoke_device
 from .keys import (
     generate_keypair_entry,
@@ -217,8 +217,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    def get_db(request: Request) -> sqlite3.Connection:
-        return request.app.state.conn
+    get_db = get_db_session
 
     def get_cfg(request: Request) -> Settings:
         return request.app.state.settings
