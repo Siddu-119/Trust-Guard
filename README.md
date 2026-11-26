@@ -6,7 +6,7 @@
 [![Symmetric](https://img.shields.io/badge/AEAD-HKDF--SHA256%20%2B%20AES--256--GCM-10b981?style=flat-square)](#cryptography--forward-secrecy)
 [![Backend](https://img.shields.io/badge/Backend-FastAPI%20%7C%20SQLite%20WAL-3b82f6?style=flat-square)](#technology-stack--dependencies)
 [![Frontend](https://img.shields.io/badge/Frontend-React%20%7C%20TypeScript%20%7C%20Tailwind-6366f1?style=flat-square)](#technology-stack--dependencies)
-[![Tests](https://img.shields.io/badge/Security%20Tests-20%2F20%20Passing-22c55e?style=flat-square)](#automated-security-testing)
+[![Tests](https://img.shields.io/badge/Security%20Tests-22%2F22%20Passing-22c55e?style=flat-square)](#automated-security-testing)
 
 ---
 
@@ -242,7 +242,7 @@ Open **http://127.0.0.1:5173/** in your browser (API docs at **http://127.0.0.1:
 
 ## Automated Security Testing
 
-Run all **20 automated security tests** (runs fully offline against isolated temporary SQLite databases):
+Run all **22 automated security tests** (runs fully offline against isolated temporary SQLite databases):
 
 ```powershell
 # Windows
@@ -253,7 +253,7 @@ Run all **20 automated security tests** (runs fully offline against isolated tem
 backend/.venv/bin/python -m pytest backend/tests/test_trustguard.py -v
 ```
 
-**Test Coverage (`20/20` passing)**:
+**Test Coverage (`22/22` passing)**:
 1. Authorized user access & Zero-Trust evaluation
 2. Unauthorized user rejection (`403 Forbidden`)
 3. Key rotation while authorized transfers continue
@@ -274,6 +274,8 @@ backend/.venv/bin/python -m pytest backend/tests/test_trustguard.py -v
 18. Ephemeral forward secrecy verification & RAM zeroization
 19. Incomplete message rejection & delivery under loss/reordering
 20. Resumable session peer binding & session takeover blocking (`403 SESSION_TAKEOVER_BLOCKED`)
+21. Concurrent browser `Promise.all` burst stability (32 simultaneous calls, zero `500` errors)
+22. Admin delete employee enforcement (server-side RBAC, key revocation, token invalidation, audit integrity)
 
 ### Production Frontend Build Verification
 

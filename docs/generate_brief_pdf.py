@@ -266,7 +266,7 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         [
             Paragraph("Frontend &amp; Tests", tc),
             Paragraph("React 18.3, TypeScript 5.7, Tailwind CSS 4.1, Recharts 2.15, pytest 9.2.0", tc),
-            Paragraph("21 / 21 automated tests pass; offline (~5.7 MB RAM)", tc),
+            Paragraph("22 / 22 automated tests pass; offline (~5.7 MB RAM)", tc),
         ],
     ]
     stbl = Table(stack_rows, colWidths=[28 * mm, 92 * mm, 62 * mm])
@@ -412,7 +412,7 @@ def build_pdf(output_path: Path, video_url: str) -> None:
     y -= bh + 4.5 * mm
     bot_p = Paragraph(
         f"<b>5-Min Demo Video:</b> <code>{video_url}</code> &nbsp;|&nbsp; "
-        "<b>Automated Suite:</b> <code>pytest backend/tests/test_trustguard.py -v</code> (21/21 Pass)",
+        "<b>Automated Suite:</b> <code>pytest backend/tests/test_trustguard.py -v</code> (22/22 Pass)",
         ParagraphStyle("BotNote", fontName="Helvetica", fontSize=7.4, leading=10, textColor=MUTED),
     )
     _, bph = bot_p.wrap(CONTENT_W, 14 * mm)
