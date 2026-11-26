@@ -274,29 +274,50 @@ class EphemeralSessionManager:
             for i in range(len(sess._secret_key_buf)):
                 sess._secret_key_buf[i] = 0
 
-    def create_session(self, sender_id: str, recipient_id: str) -> tuple[str, bytes]:
-        """Create a one-time ephemeral ML-KEM-768 session and return (session_id, eph_public_key)."""
+    def create_session(
+        self,
+        sender_id: str,
+        recipient_id: str,
+        *,
+        session_id: str | None = None,
+        step: int = 1,
+    ) -> tuple[str, bytes]:
+        """Create a one-time ephemeral ML-KEM-768 keypair for (session_id, step)."""
         pk, sk = generate_kem_keypair()
-        session_id = f"eph-{secrets.token_hex(12)}"
+        sid = session_id or f"eph-{secrets.token_hex(12)}"
+        slot = f"{sid}#{step}"
         now = time.time()
         with self._lock:
             self._cleanup_expired_locked(now)
-            self._sessions[session_id] = EphemeralSession(
-                session_id=session_id,
+            self._sessions[slot] = EphemeralSession(
+                session_id=sid,
                 sender_id=sender_id,
                 recipient_id=recipient_id,
                 public_key=pk,
                 _secret_key_buf=bytearray(sk),
                 created_at=now,
             )
-        return session_id, pk
+        return sid, pk
+
+    def has_active_key(self, session_id: str, step: int = 1) -> bool:
+        """Check whether an ephemeral secret key for (session_id, step) is still in RAM."""
+        with self._lock:
+            sess = self._sessions.get(f"{session_id}#{step}")
+            return sess is not None and not sess.consumed
 
     def consume_decapsulate(
-        self, session_id: str, sender_id: str, recipient_id: str, kem_ciphertext: bytes
+        self,
+        session_id: str,
+        sender_id: str,
+        recipient_id: str,
+        kem_ciphertext: bytes,
+        *,
+        step: int = 1,
     ) -> bytes:
         """Decapsulate once and immediately zeroize & remove the ephemeral secret key."""
+        slot = f"{session_id}#{step}"
         with self._lock:
-            sess = self._sessions.get(session_id)
+            sess = self._sessions.get(slot)
             if sess is None or sess.consumed:
                 raise ValueError("Ephemeral session missing, expired, or already consumed.")
             if (time.time() - sess.created_at) > self._ttl_seconds:
@@ -312,7 +333,7 @@ class EphemeralSessionManager:
                 sess.consumed = True
                 for i in range(len(sess._secret_key_buf)):
                     sess._secret_key_buf[i] = 0
-                self._sessions.pop(session_id, None)
+                self._sessions.pop(slot, None)
 
 
 ephemeral_sessions = EphemeralSessionManager()

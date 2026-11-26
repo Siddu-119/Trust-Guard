@@ -189,13 +189,15 @@ def _verify_and_decrypt_backup(
     except Exception as exc:
         return False, f"Backup envelope structure corrupted: {exc}", None
 
-    # 1. Verify ML-DSA-65 signature
+    # 1. Verify ML-DSA-65 signature (and refuse if signing key was revoked)
     sig_key = conn.execute(
-        "SELECT public_key_b64 FROM crypto_keys WHERE key_id = ?",
+        "SELECT public_key_b64, status FROM crypto_keys WHERE key_id = ?",
         (blob.get("signing_key_id"),),
     ).fetchone()
     if not sig_key:
         return False, "Backup signing key missing; refusing unverified backup.", None
+    if sig_key["status"] == "REVOKED":
+        return False, "Backup signing key has been REVOKED; refusing unverified backup material.", None
 
     manifest_bytes = canonical_json(
         {

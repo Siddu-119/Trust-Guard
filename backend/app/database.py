@@ -157,7 +157,42 @@ CREATE TABLE IF NOT EXISTS threat_alerts (
     reason TEXT NOT NULL,
     rule_triggered TEXT NOT NULL,
     detection_latency_ms REAL NOT NULL,
+    ordering_status TEXT NOT NULL DEFAULT 'IN_ORDER',
+    related_events TEXT NOT NULL DEFAULT '[]',
     acknowledged INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS node_key_revocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL REFERENCES service_nodes(node_id) ON DELETE CASCADE,
+    key_id TEXT NOT NULL REFERENCES crypto_keys(key_id) ON DELETE CASCADE,
+    enforced INTEGER NOT NULL CHECK(enforced IN (0, 1)),
+    enforcement_ms REAL,
+    enforced_at TEXT,
+    status TEXT NOT NULL CHECK(status IN ('ENFORCED', 'PENDING_SYNC')),
+    UNIQUE(node_id, key_id)
+);
+
+CREATE TABLE IF NOT EXISTS messaging_sessions (
+    session_id TEXT PRIMARY KEY,
+    initiator_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    initiator_device_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    step_counter INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL CHECK(state IN ('ACTIVE', 'CLOSED', 'REVOKED')) DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL,
+    last_resumed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_delivery_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    session_id TEXT,
+    sender_id TEXT,
+    recipient_id TEXT,
+    status TEXT NOT NULL,
+    failure_reason TEXT,
+    attempted_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -206,6 +241,19 @@ def get_connection(db_path: str) -> sqlite3.Connection:
 def init_database(conn: sqlite3.Connection, settings: Settings) -> None:
     """Create schema if needed and seed initial synthetic hackathon data once."""
     conn.executescript(SCHEMA_SQL)
+
+    # Non-destructive column migrations for existing prototype SQLite databases
+    alert_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(threat_alerts)").fetchall()
+    }
+    if "ordering_status" not in alert_cols:
+        conn.execute(
+            "ALTER TABLE threat_alerts ADD COLUMN ordering_status TEXT NOT NULL DEFAULT 'IN_ORDER'"
+        )
+    if "related_events" not in alert_cols:
+        conn.execute(
+            "ALTER TABLE threat_alerts ADD COLUMN related_events TEXT NOT NULL DEFAULT '[]'"
+        )
     conn.commit()
 
     existing = conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"]

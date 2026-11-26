@@ -185,6 +185,30 @@ export interface SecureMessage {
   plaintext: string | null;
 }
 
+export interface MessagingSession {
+  session_id: string;
+  initiator_id: string;
+  initiator_username?: string;
+  initiator_device_id: string;
+  peer_id: string;
+  peer_username?: string;
+  step_counter: number;
+  state: string;
+  created_at: string;
+  last_resumed_at: string;
+}
+
+export interface DeliveryAttempt {
+  attempt_id: string;
+  message_id: string;
+  session_id: string | null;
+  sender_id: string | null;
+  recipient_id: string | null;
+  status: string;
+  failure_reason: string | null;
+  attempted_at: string;
+}
+
 export interface ThreatAlert {
   alert_id: string;
   user_identity: string;
@@ -195,6 +219,8 @@ export interface ThreatAlert {
   reason: string;
   rule_triggered: string;
   detection_latency_ms: number;
+  ordering_status?: string;
+  related_events?: string[];
   acknowledged: number;
 }
 

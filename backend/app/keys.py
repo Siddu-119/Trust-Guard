@@ -19,7 +19,7 @@ from .crypto import (
     unwrap_private_key,
     wrap_private_key,
 )
-from .nodes import propagate_key_version_to_nodes
+from .nodes import propagate_key_revocation_to_nodes, propagate_key_version_to_nodes
 from .threat_detection import SecurityEventInput, process_and_store_event
 
 PUBLIC_KEY_COLUMNS = """
@@ -500,13 +500,30 @@ def verify_key_usage(
     key_id: str,
     actor_id: str,
     actor_role: str,
+    node_id: str | None = None,
 ) -> dict[str, Any]:
-    """Verify whether a key version is allowed under the current cutoff and revocation policy."""
+    """Verify whether a key version is allowed under the current cutoff and node revocation policy."""
     key_row = conn.execute(
         f"SELECT {PUBLIC_KEY_COLUMNS} FROM crypto_keys WHERE key_id = ?", (key_id,)
     ).fetchone()
     if not key_row:
         raise HTTPException(status_code=404, detail=f"Key '{key_id}' not found.")
+
+    if node_id:
+        node_row = conn.execute(
+            "SELECT name, status FROM service_nodes WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        if not node_row:
+            raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found.")
+        if node_row["status"] == "OFFLINE":
+            return {
+                "key_id": key_id,
+                "node_id": node_id,
+                "version": key_row["version"],
+                "status": "NODE_OFFLINE",
+                "accepted": False,
+                "reason": f"Node '{node_row['name']}' is OFFLINE.",
+            }
 
     grace = get_grace_versions(conn, settings)
     active_row = conn.execute(
@@ -592,6 +609,7 @@ def verify_key_usage(
 
     return {
         "key_id": key_id,
+        "node_id": node_id,
         "version": key_row["version"],
         "status": status_val,
         "accepted": accepted,
@@ -617,17 +635,24 @@ def revoke_key_entry(
     )
     conn.commit()
 
+    propagation = propagate_key_revocation_to_nodes(conn, key_id=key_id)
+
     record_audit_event(
         conn,
         actor_id=actor_id,
         action="KEY_REVOKED",
         resource=key_id,
         result="SUCCESS",
-        metadata={"purpose": key_row["purpose"], "version": key_row["version"], "reason": reason},
+        metadata={
+            "purpose": key_row["purpose"],
+            "version": key_row["version"],
+            "reason": reason,
+            "nodes_enforced": sum(1 for p in propagation if p["status"] == "ENFORCED"),
+        },
         timestamp=now_iso,
     )
 
     updated = conn.execute(
         f"SELECT {PUBLIC_KEY_COLUMNS} FROM crypto_keys WHERE key_id = ?", (key_id,)
     ).fetchone()
-    return dict(updated)
+    return {**dict(updated), "node_propagation": propagation}

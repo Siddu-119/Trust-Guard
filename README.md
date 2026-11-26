@@ -123,11 +123,16 @@ Open `http://127.0.0.1:5173` in your browser. Vite proxies `/api/*` requests to 
 
 ## 4. Running Automated Tests
 
-Run all 12 automated security tests (covering authorization, key rotation, cutoff rejection, device revocation across nodes, crash recovery, corrupted backup detection, audit log tampering, message replay, wrong recipient tampering, threat detection, and post-revocation denial):
+Run all 20 automated security tests (covering authorization, key rotation during active transfers, cutoff rejection, device & key revocation across nodes, device re-enrolment, crash during rotation & recovery, corrupted/revoked-signer backup detection, audit log tampering & log injection, privilege escalation, lateral movement, clock skew & out-of-order events, message replay, recipient binding, integrity, forward secrecy, incomplete/reordered delivery, and session resumption takeover protection):
 
 ```powershell
 & "backend\.venv\Scripts\python.exe" -m pytest backend\tests\test_trustguard.py -v
 ```
+
+### Clock-Skew & Event Ordering Policy
+- **Supported Clock Skew Range**: `±300 seconds` (`±5 minutes`).
+- **Out-of-Order Grace Window**: Events arriving up to `300 seconds` behind the user's latest timestamp watermark are normalized and inserted in sorted order into sliding windows, flagged as `OUT_OF_ORDER_UNCERTAIN` when reordering/offset `>= 1s`.
+- Events exceeding `±300s` skew or grace lag raise `RULE_CLOCK_SKEW_ANOMALY` (`CLOCK_SKEW_EXCEEDED`).
 
 ---
 

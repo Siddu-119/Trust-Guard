@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Lock, Send, ShieldAlert, ShieldCheck } from "lucide-react";
+import { KeyRound, Lock, RefreshCw, Send, ShieldAlert, ShieldCheck } from "lucide-react";
 import { apiRequest } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
-import { DemoAccount, SecureMessage } from "../types";
+import { DeliveryAttempt, DemoAccount, MessagingSession, SecureMessage } from "../types";
 
 interface Props {
   token: string;
@@ -12,19 +12,26 @@ interface Props {
 
 export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }) => {
   const [messages, setMessages] = useState<SecureMessage[]>([]);
+  const [sessions, setSessions] = useState<MessagingSession[]>([]);
+  const [attempts, setAttempts] = useState<DeliveryAttempt[]>([]);
   const [recipients, setRecipients] = useState<DemoAccount[]>([]);
   const [recipientId, setRecipientId] = useState("usr-alice");
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [plaintext, setPlaintext] = useState("");
   const [lastEnvelope, setLastEnvelope] = useState<Record<string, any> | null>(null);
   const [feedback, setFeedback] = useState<{ type: "ok" | "err"; msg: string } | null>(null);
 
   const loadData = async () => {
     try {
-      const [msgs, accs] = await Promise.all([
+      const [msgs, sess, att, accs] = await Promise.all([
         apiRequest<SecureMessage[]>("/api/messages", { token, deviceId }),
+        apiRequest<MessagingSession[]>("/api/messages/sessions", { token, deviceId }),
+        apiRequest<DeliveryAttempt[]>("/api/messages/delivery-attempts", { token, deviceId }),
         apiRequest<DemoAccount[]>("/api/auth/demo-accounts"),
       ]);
       setMessages(msgs);
+      setSessions(sess);
+      setAttempts(att);
       const others = accs.filter((a) => a.user_id !== currentUserId);
       setRecipients(others.length > 0 ? others : accs);
       if (others.length > 0 && !others.some((o) => o.user_id === recipientId)) {
@@ -39,6 +46,47 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
     loadData();
   }, [token, deviceId, currentUserId]);
 
+  const handleStartSession = async () => {
+    setFeedback(null);
+    try {
+      const s = await apiRequest<MessagingSession>("/api/messages/sessions", {
+        method: "POST",
+        token,
+        deviceId,
+        body: { recipient_id: recipientId },
+      });
+      setActiveSessionId(s.session_id);
+      setFeedback({
+        type: "ok",
+        msg: `Started bound session ${s.session_id} (${currentUserId} on ${s.initiator_device_id} → ${s.peer_username ?? s.peer_id}).`,
+      });
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: "err", msg: err.message });
+    }
+  };
+
+  const handleResumeSession = async (sid: string) => {
+    setFeedback(null);
+    try {
+      const res = await apiRequest<any>(`/api/messages/sessions/${sid}/resume`, {
+        method: "POST",
+        token,
+        deviceId,
+      });
+      setActiveSessionId(res.session_id);
+      setRecipientId(res.peer_id);
+      setFeedback({
+        type: "ok",
+        msg: `Resumed session ${res.session_id} at step ${res.step_counter}. Peer & device binding verified.`,
+      });
+      await loadData();
+    } catch (err: any) {
+      setFeedback({ type: "err", msg: err.message });
+      await loadData();
+    }
+  };
+
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
@@ -47,17 +95,22 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
         method: "POST",
         token,
         deviceId,
-        body: { recipient_id: recipientId, plaintext },
+        body: {
+          recipient_id: recipientId,
+          plaintext,
+          session_id: activeSessionId || null,
+        },
       });
       setLastEnvelope(res.envelope);
       setPlaintext("");
       setFeedback({
         type: "ok",
-        msg: `Message ${res.delivery.message_id} encrypted (ML-KEM-768 + AES-256-GCM), signed (ML-DSA-65), verified, and delivered. Ephemeral session key zeroized.`,
+        msg: `Message ${res.delivery.message_id} (session ${res.delivery.session_id}, step ${res.delivery.session_step}) encrypted, signed, verified, and delivered. Ephemeral key zeroized: ${res.delivery.ephemeral_key_zeroized}.`,
       });
       await loadData();
     } catch (err: any) {
       setFeedback({ type: "err", msg: err.message });
+      await loadData();
     }
   };
 
@@ -74,6 +127,7 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
       setFeedback({ type: "ok", msg: "Unexpectedly accepted replay." });
     } catch (err: any) {
       setFeedback({ type: "err", msg: `Replay Test Result: ${err.message}` });
+      await loadData();
     }
   };
 
@@ -96,6 +150,7 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
       });
     } catch (err: any) {
       setFeedback({ type: "err", msg: `Tampered Recipient Test Result: ${err.message}` });
+      await loadData();
     }
   };
 
@@ -110,15 +165,16 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
       });
     } catch (err: any) {
       setFeedback({ type: "err", msg: `Incomplete Envelope Test Result: ${err.message}` });
+      await loadData();
     }
   };
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-white">Post-Quantum Secure Messaging</h1>
+        <h1 className="text-xl font-semibold text-white">Post-Quantum Secure Messaging & Sessions</h1>
         <p className="text-sm text-slate-400">
-          Ephemeral ML-KEM-768 forward secrecy, HKDF-SHA256 + AES-256-GCM AAD recipient binding, ML-DSA-65 sender authentication, and replay rejection.
+          Ephemeral ML-KEM-768 forward secrecy per step, authenticated session resumption, recipient AAD binding, ML-DSA-65 signatures, and replay rejection.
         </p>
       </div>
 
@@ -126,13 +182,12 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
       <div className="p-4 rounded-xl bg-cyan-500/5 border border-cyan-500/25 text-xs text-slate-300 space-y-1">
         <div className="font-semibold text-cyan-300 flex items-center gap-1.5">
           <Lock className="w-3.5 h-3.5" />
-          Forward Secrecy Session Architecture & Security Assumptions
+          Forward Secrecy & Resumed Session Architecture
         </div>
         <p>
-          Static long-term KEM keys alone do not guarantee forward secrecy. TrustGuard generates a fresh, one-time{" "}
-          <span className="font-mono text-white">ML-KEM-768</span> ephemeral keypair per message session in volatile memory, binds sender, recipient, and{" "}
-          <span className="font-mono text-white">message_id</span> into AES-256-GCM AAD + HKDF context, signs with{" "}
-          <span className="font-mono text-white">ML-DSA-65</span>, and zeroizes the ephemeral secret key immediately upon delivery. Compromising long-term identity signing keys later cannot decrypt past ephemeral sessions (assuming ephemeral RAM was not captured during the brief active window).
+          Each message (including every step of a resumed session) generates a fresh one-time{" "}
+          <span className="font-mono text-white">ML-KEM-768</span> keypair in volatile RAM and zeroizes its secret key immediately upon delivery. Resumed sessions stay strictly bound to{" "}
+          <span className="font-mono text-white">(initiator_id, initiator_device_id, peer_id)</span> so another identity cannot hijack a session ID.
         </p>
       </div>
 
@@ -147,6 +202,47 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
           {feedback.msg}
         </div>
       )}
+
+      {/* Resumable Session Bar */}
+      <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <KeyRound className="w-4 h-4 text-cyan-400" />
+            Authenticated Resumable Sessions
+          </div>
+          <button
+            type="button"
+            onClick={handleStartSession}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium"
+          >
+            Start Bound Session with Recipient
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={activeSessionId}
+            onChange={(e) => setActiveSessionId(e.target.value)}
+            className="flex-1 min-w-[240px] px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-white"
+          >
+            <option value="">One-shot ephemeral session (new session ID per message)</option>
+            {sessions.map((s) => (
+              <option key={s.session_id} value={s.session_id}>
+                {s.session_id} | {s.initiator_username ?? s.initiator_id} ({s.initiator_device_id}) → {s.peer_username ?? s.peer_id} [steps={s.step_counter}]
+              </option>
+            ))}
+          </select>
+          {activeSessionId && (
+            <button
+              type="button"
+              onClick={() => handleResumeSession(activeSessionId)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-medium"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Verify / Resume Session
+            </button>
+          )}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <form
@@ -186,7 +282,7 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
             type="submit"
             className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium"
           >
-            Encrypt, Sign & Deliver
+            {activeSessionId ? "Send on Resumed Session" : "Encrypt, Sign & Deliver"}
           </button>
         </form>
 
@@ -197,7 +293,7 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
             Delivery Gate Security Tests
           </div>
           <p className="text-xs text-slate-400">
-            Send a message first, then verify that the backend delivery gate rejects replay, altered recipients, and incomplete envelopes.
+            Verify that the backend rejects replay, altered recipients, incomplete envelopes, and unauthorized session takeovers.
           </p>
           <button
             onClick={handleReplayTest}
@@ -243,7 +339,7 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
               {messages.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-6 text-center text-slate-400">
-                    No messages delivered yet. Send a confidential message above.
+                    No messages delivered yet.
                   </td>
                 </tr>
               ) : (
@@ -276,6 +372,49 @@ export const MessagesPage: React.FC<Props> = ({ token, deviceId, currentUserId }
                           [Sealed for {m.recipient_username}] {m.ciphertext_preview}
                         </div>
                       )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Delivery Attempts & Failure Reporting */}
+      <div className="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-800 text-sm font-semibold text-white">
+          Delivery Gate Attempt Log (Successes & Reported Rejections)
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-950 text-slate-400 uppercase font-mono">
+              <tr>
+                <th className="px-4 py-2.5">Time</th>
+                <th className="px-4 py-2.5">Message ID</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Detail / Failure Reason</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {attempts.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-4 text-center text-slate-400">
+                    No delivery attempts recorded yet.
+                  </td>
+                </tr>
+              ) : (
+                attempts.slice(0, 15).map((a) => (
+                  <tr key={a.attempt_id}>
+                    <td className="px-4 py-2.5 font-mono text-slate-400">
+                      {new Date(a.attempted_at).toLocaleTimeString()}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-cyan-300">{a.message_id}</td>
+                    <td className="px-4 py-2.5">
+                      <StatusBadge value={a.status} />
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-300">
+                      {a.failure_reason ?? "Verified and delivered"}
                     </td>
                   </tr>
                 ))

@@ -37,13 +37,27 @@ def list_service_nodes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             (node["node_id"],),
         ).fetchall()
         enforced_list = [dict(r) for r in rev_rows]
-        pending_count = sum(1 for r in enforced_list if r["status"] == "PENDING_SYNC")
+        key_rev_rows = conn.execute(
+            """
+            SELECT key_id, enforced, enforcement_ms, enforced_at, status
+            FROM node_key_revocations
+            WHERE node_id = ?
+            ORDER BY id DESC
+            """,
+            (node["node_id"],),
+        ).fetchall()
+        key_enforced_list = [dict(r) for r in key_rev_rows]
+        pending_count = sum(1 for r in enforced_list if r["status"] == "PENDING_SYNC") + sum(
+            1 for r in key_enforced_list if r["status"] == "PENDING_SYNC"
+        )
         result.append(
             {
                 **dict(node),
                 "revoked_devices_enforced": sum(1 for r in enforced_list if r["enforced"] == 1),
+                "revoked_keys_enforced": sum(1 for r in key_enforced_list if r["enforced"] == 1),
                 "pending_revocations": pending_count,
                 "revocation_records": enforced_list,
+                "key_revocation_records": key_enforced_list,
             }
         )
     return result
@@ -166,6 +180,68 @@ def propagate_device_revocation_to_nodes(
     return propagation
 
 
+def propagate_key_revocation_to_nodes(
+    conn: sqlite3.Connection, *, key_id: str
+) -> list[dict[str, Any]]:
+    """Enforce key revocation across all service nodes and measure per-node latency."""
+    nodes = conn.execute("SELECT * FROM service_nodes ORDER BY node_id ASC").fetchall()
+    now_iso = utc_now_iso()
+    propagation: list[dict[str, Any]] = []
+
+    for node in nodes:
+        t0 = time.perf_counter()
+        if node["status"] == "ONLINE":
+            conn.execute(
+                """
+                INSERT INTO node_key_revocations (node_id, key_id, enforced, enforcement_ms, enforced_at, status)
+                VALUES (?, ?, 1, 0.0, ?, 'ENFORCED')
+                ON CONFLICT(node_id, key_id) DO UPDATE SET
+                    enforced = 1,
+                    enforced_at = excluded.enforced_at,
+                    status = 'ENFORCED'
+                """,
+                (node["node_id"], key_id, now_iso),
+            )
+            elapsed_ms = round(max(0.05, (time.perf_counter() - t0) * 1000.0), 3)
+            conn.execute(
+                "UPDATE node_key_revocations SET enforcement_ms = ? WHERE node_id = ? AND key_id = ?",
+                (elapsed_ms, node["node_id"], key_id),
+            )
+            propagation.append(
+                {
+                    "node_id": node["node_id"],
+                    "name": node["name"],
+                    "node_status": "ONLINE",
+                    "status": "ENFORCED",
+                    "enforcement_ms": elapsed_ms,
+                    "enforced_at": now_iso,
+                }
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO node_key_revocations (node_id, key_id, enforced, enforcement_ms, enforced_at, status)
+                VALUES (?, ?, 0, NULL, NULL, 'PENDING_SYNC')
+                ON CONFLICT(node_id, key_id) DO UPDATE SET
+                    enforced = 0,
+                    status = 'PENDING_SYNC'
+                """,
+                (node["node_id"], key_id),
+            )
+            propagation.append(
+                {
+                    "node_id": node["node_id"],
+                    "name": node["name"],
+                    "node_status": "OFFLINE",
+                    "status": "PENDING_SYNC",
+                    "enforcement_ms": None,
+                    "enforced_at": None,
+                }
+            )
+    conn.commit()
+    return propagation
+
+
 def sync_node(conn: sqlite3.Connection, *, node_id: str, actor_id: str) -> dict[str, Any]:
     """Synchronize a node with latest committed key version and any pending revocations."""
     node = conn.execute("SELECT * FROM service_nodes WHERE node_id = ?", (node_id,)).fetchone()
@@ -212,6 +288,37 @@ def sync_node(conn: sqlite3.Connection, *, node_id: str, actor_id: str) -> dict[
                 ),
             )
 
+    # Catch up all revoked keys not yet enforced on this node
+    revoked_keys = conn.execute(
+        "SELECT key_id FROM crypto_keys WHERE status = 'REVOKED'"
+    ).fetchall()
+    caught_up_keys = 0
+    for kr in revoked_keys:
+        existing_kr = conn.execute(
+            "SELECT enforced FROM node_key_revocations WHERE node_id = ? AND key_id = ?",
+            (node_id, kr["key_id"]),
+        ).fetchone()
+        if not existing_kr or existing_kr["enforced"] == 0:
+            caught_up_keys += 1
+            step_t0 = time.perf_counter()
+            conn.execute(
+                """
+                INSERT INTO node_key_revocations (node_id, key_id, enforced, enforcement_ms, enforced_at, status)
+                VALUES (?, ?, 1, ?, ?, 'ENFORCED')
+                ON CONFLICT(node_id, key_id) DO UPDATE SET
+                    enforced = 1,
+                    enforcement_ms = excluded.enforcement_ms,
+                    enforced_at = excluded.enforced_at,
+                    status = 'ENFORCED'
+                """,
+                (
+                    node_id,
+                    kr["key_id"],
+                    round(max(0.05, (time.perf_counter() - step_t0) * 1000.0), 3),
+                    now_iso,
+                ),
+            )
+
     total_ms = round(max(0.05, (time.perf_counter() - t0) * 1000.0), 3)
     conn.execute(
         """
@@ -232,6 +339,7 @@ def sync_node(conn: sqlite3.Connection, *, node_id: str, actor_id: str) -> dict[
         metadata={
             "synced_key_version": latest_ver,
             "caught_up_revocations": caught_up,
+            "caught_up_key_revocations": caught_up_keys,
             "latency_ms": total_ms,
         },
     )
@@ -241,6 +349,7 @@ def sync_node(conn: sqlite3.Connection, *, node_id: str, actor_id: str) -> dict[
         "status": "ONLINE",
         "synced_key_version": latest_ver,
         "caught_up_revocations": caught_up,
+        "caught_up_key_revocations": caught_up_keys,
         "latency_ms": total_ms,
         "synced_at": now_iso,
     }

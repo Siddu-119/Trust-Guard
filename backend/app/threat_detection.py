@@ -1,24 +1,30 @@
 """Deterministic rule-based and graph-based Threat Detection Engine.
 
 Strictly deterministic — contains zero AI, LLMs, or machine learning models.
-Evaluates live platform security events and labelled synthetic datasets using
-a directed zero-trust service topology graph and stateful sliding-window rules.
+Supports out-of-order event arrival and distributed clock offsets within a
+documented timing range (+/- 300 seconds), flagging uncertain event ordering.
 """
 
 from __future__ import annotations
 
+import bisect
 import json
 import sqlite3
 import statistics
 import time
 import uuid
-from collections import defaultdict, deque
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .audit import utc_now_iso
+
+# Documented Clock-Skew & Out-of-Order Timing Envelope
+SUPPORTED_CLOCK_SKEW_SECONDS = 300.0  # +/- 5 minutes supported clock offset tolerance
+OUT_OF_ORDER_GRACE_SECONDS = 300.0    # Events arriving up to 5 minutes behind watermark are re-sorted
+UNCERTAIN_ORDER_THRESHOLD_SECONDS = 1.0  # Reordering > 1s or non-zero skew flags uncertain ordering
 
 # Allowed Zero-Trust directed service-to-service topology edges
 ALLOWED_SERVICE_EDGES: dict[str, set[str]] = {
@@ -49,6 +55,8 @@ class SecurityEventInput:
     event_time: str
     key_status: str = "ACTIVE"
     reason_code: str = ""
+    event_id: str = field(default_factory=lambda: f"sec-{uuid.uuid4().hex[:10]}")
+    clock_offset_seconds: float = 0.0
 
 
 def _parse_ts(ts_str: str) -> float:
@@ -58,25 +66,82 @@ def _parse_ts(ts_str: str) -> float:
     return dt.timestamp()
 
 
+def _best_span_window(
+    entries: list[tuple[float, str, str]], target_ts: float, window_seconds: float
+) -> list[tuple[float, str, str]]:
+    """Find the richest contiguous subset containing target_ts whose timestamps span <= window_seconds."""
+    candidates = [e for e in entries if abs(e[0] - target_ts) <= window_seconds]
+    if not candidates:
+        return []
+    best: list[tuple[float, str, str]] = []
+    right = 0
+    for left in range(len(candidates)):
+        while right < len(candidates) and (candidates[right][0] - candidates[left][0]) <= window_seconds:
+            right += 1
+        window_slice = candidates[left:right]
+        if any(e[0] == target_ts for e in window_slice) and len(window_slice) >= len(best):
+            best = window_slice
+    return best
+
+
 class DeterministicThreatEngine:
-    """Stateful deterministic rule + directed-graph analyzer."""
+    """Stateful deterministic rule + directed-graph analyzer with clock-skew & reordering support."""
 
     def __init__(self) -> None:
-        # Per-user sliding windows of (epoch_seconds, destination_service)
-        self._user_services: dict[str, deque[tuple[float, str]]] = defaultdict(deque)
-        # Per-user sliding windows of DENY timestamps
-        self._user_denials: dict[str, deque[float]] = defaultdict(deque)
-        # Per-user sliding windows of key rotation timestamps
-        self._user_key_ops: dict[str, deque[float]] = defaultdict(deque)
+        # Sorted lists of (normalized_ts, event_id, value)
+        self._user_services: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
+        self._user_denials: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
+        self._user_key_ops: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
+        self._user_watermark: dict[str, float] = {}
+
+    def _prune(self, items: list[tuple[float, str, str]], watermark: float, max_age: float) -> None:
+        cutoff = watermark - max_age
+        while items and items[0][0] < cutoff:
+            items.pop(0)
 
     def evaluate_event(self, event: SecurityEventInput) -> list[dict[str, Any]]:
-        """Evaluate one security event and return any triggered alerts."""
+        """Evaluate one security event with clock normalization and out-of-order window sorting."""
         start_ns = time.perf_counter_ns()
-        ts = _parse_ts(event.event_time)
+        raw_ts = _parse_ts(event.event_time)
+        offset = float(event.clock_offset_seconds)
+        # Normalize reported timestamp into reference UTC using node clock offset
+        ts = raw_ts - offset
+
+        prev_watermark = self._user_watermark.get(event.user_identity)
+        ordering_status = "IN_ORDER"
+        ordering_uncertain = False
+        skew_exceeded = abs(offset) > SUPPORTED_CLOCK_SKEW_SECONDS
+
+        if prev_watermark is not None and ts < prev_watermark:
+            lag = prev_watermark - ts
+            if lag > OUT_OF_ORDER_GRACE_SECONDS:
+                ordering_status = "CLOCK_SKEW_EXCEEDED"
+                ordering_uncertain = True
+            elif lag >= UNCERTAIN_ORDER_THRESHOLD_SECONDS or abs(offset) >= UNCERTAIN_ORDER_THRESHOLD_SECONDS:
+                ordering_status = "OUT_OF_ORDER_UNCERTAIN"
+                ordering_uncertain = True
+            else:
+                ordering_status = "OUT_OF_ORDER_RECOVERED"
+        elif skew_exceeded:
+            ordering_status = "CLOCK_SKEW_EXCEEDED"
+            ordering_uncertain = True
+        elif abs(offset) >= UNCERTAIN_ORDER_THRESHOLD_SECONDS:
+            ordering_status = "CLOCK_OFFSET_ADJUSTED"
+            ordering_uncertain = True
+
+        watermark = ts if prev_watermark is None else max(prev_watermark, ts)
+        self._user_watermark[event.user_identity] = watermark
+
         alerts: list[dict[str, Any]] = []
 
-        def add_alert(severity: str, rule: str, reason: str) -> None:
+        def add_alert(
+            severity: str,
+            rule: str,
+            reason: str,
+            related: list[str] | None = None,
+        ) -> None:
             elapsed_ms = max(0.001, (time.perf_counter_ns() - start_ns) / 1_000_000.0)
+            rel_list = related or [event.event_id]
             alerts.append(
                 {
                     "alert_id": f"alt-{uuid.uuid4().hex[:14]}",
@@ -88,7 +153,18 @@ class DeterministicThreatEngine:
                     "reason": reason,
                     "rule_triggered": rule,
                     "detection_latency_ms": round(elapsed_ms, 4),
+                    "ordering_status": ordering_status,
+                    "ordering_uncertain": ordering_uncertain,
+                    "related_events": rel_list,
                 }
+            )
+
+        if skew_exceeded or ordering_status == "CLOCK_SKEW_EXCEEDED":
+            add_alert(
+                "MEDIUM",
+                "RULE_CLOCK_SKEW_ANOMALY",
+                f"Event timestamp/offset outside supported +/-{int(SUPPORTED_CLOCK_SKEW_SECONDS)}s range "
+                f"(offset={offset}s); event ordering is uncertain.",
             )
 
         # Rule 1: Access from a revoked device
@@ -141,42 +217,54 @@ class DeterministicThreatEngine:
             )
         elif event.resource == "keys" and event.action in {"rotate", "revoke"}:
             kq = self._user_key_ops[event.user_identity]
-            kq.append(ts)
-            while kq and (ts - kq[0]) > 60.0:
-                kq.popleft()
-            if len(kq) >= 3:
+            bisect.insort(kq, (ts, event.event_id, event.action))
+            self._prune(kq, watermark, 60.0 + OUT_OF_ORDER_GRACE_SECONDS)
+            win = _best_span_window(kq, ts, 60.0)
+            if len(win) >= 3:
                 add_alert(
                     "HIGH",
                     "RULE_SUSPICIOUS_KEY_OP",
-                    f"Rapid consecutive key operations ({len(kq)} within 60s) by '{event.user_identity}'.",
+                    f"Rapid consecutive key operations ({len(win)} within 60s) by '{event.user_identity}'.",
+                    related=[e[1] for e in win],
                 )
 
-        # Rule 5: Unusual access to multiple services (graph fan-out in 120s window)
-        sq = self._user_services[event.user_identity]
-        sq.append((ts, event.destination_service))
-        while sq and (ts - sq[0][0]) > 120.0:
-            sq.popleft()
-        distinct_services = {svc for _, svc in sq}
-        fanout_threshold = 3 if event.role != "Admin" else 4
-        if len(distinct_services) >= fanout_threshold:
+        # Rule 5: Session hijack attempt
+        if event.reason_code == "SESSION_TAKEOVER":
             add_alert(
-                "MEDIUM" if event.role == "Admin" else "HIGH",
-                "RULE_MULTI_SERVICE_FANOUT",
-                f"User '{event.user_identity}' ({event.role}) touched {len(distinct_services)} distinct "
-                f"services ({', '.join(sorted(distinct_services))}) within 120s.",
+                "CRITICAL",
+                "RULE_SESSION_HIJACK_ATTEMPT",
+                f"Unauthorized identity '{event.user_identity}' attempted to resume or hijack another peer's session.",
             )
 
-        # Rule 6: Repeated denied requests (>= 3 denials in 180s)
+        # Rule 6: Unusual access to multiple services (graph fan-out in 120s window, excluding control-plane UI calls)
+        if event.destination_service != "control-plane":
+            sq = self._user_services[event.user_identity]
+            bisect.insort(sq, (ts, event.event_id, event.destination_service))
+            self._prune(sq, watermark, 120.0 + OUT_OF_ORDER_GRACE_SECONDS)
+            win = _best_span_window(sq, ts, 120.0)
+            distinct_services = {svc for _, _, svc in win}
+            fanout_threshold = 3 if event.role != "Admin" else 4
+            if len(distinct_services) >= fanout_threshold:
+                add_alert(
+                    "MEDIUM" if event.role == "Admin" else "HIGH",
+                    "RULE_MULTI_SERVICE_FANOUT",
+                    f"User '{event.user_identity}' ({event.role}) touched {len(distinct_services)} distinct "
+                    f"services ({', '.join(sorted(distinct_services))}) within 120s.",
+                    related=[e[1] for e in win],
+                )
+
+        # Rule 7: Repeated denied requests (>= 3 denials in 180s, sorted by event time)
         if event.decision == "DENY":
             dq = self._user_denials[event.user_identity]
-            dq.append(ts)
-            while dq and (ts - dq[0]) > 180.0:
-                dq.popleft()
-            if len(dq) >= 3:
+            bisect.insort(dq, (ts, event.event_id, event.resource))
+            self._prune(dq, watermark, 180.0 + OUT_OF_ORDER_GRACE_SECONDS)
+            win = _best_span_window(dq, ts, 180.0)
+            if len(win) >= 3:
                 add_alert(
                     "HIGH",
                     "RULE_REPEATED_DENIALS",
-                    f"{len(dq)} denied access attempts for '{event.user_identity}' within 180s.",
+                    f"{len(win)} denied access attempts for '{event.user_identity}' within 180s.",
+                    related=[e[1] for e in win],
                 )
 
         return alerts
@@ -184,6 +272,19 @@ class DeterministicThreatEngine:
 
 # Shared live engine instance for platform runtime
 live_threat_engine = DeterministicThreatEngine()
+
+
+def get_timing_policy() -> dict[str, Any]:
+    return {
+        "supported_clock_skew_seconds": SUPPORTED_CLOCK_SKEW_SECONDS,
+        "out_of_order_grace_seconds": OUT_OF_ORDER_GRACE_SECONDS,
+        "uncertain_order_threshold_seconds": UNCERTAIN_ORDER_THRESHOLD_SECONDS,
+        "policy_summary": (
+            f"Events arriving with clock offsets or out-of-order lag up to +/-{int(SUPPORTED_CLOCK_SKEW_SECONDS)}s "
+            f"are normalized and sorted into sliding windows; lag > {int(UNCERTAIN_ORDER_THRESHOLD_SECONDS)}s "
+            f"is flagged as OUT_OF_ORDER_UNCERTAIN, and lag/offset > {int(SUPPORTED_CLOCK_SKEW_SECONDS)}s raises CLOCK_SKEW_EXCEEDED."
+        ),
+    }
 
 
 def process_and_store_event(
@@ -196,8 +297,9 @@ def process_and_store_event(
             """
             INSERT INTO threat_alerts (
                 alert_id, user_identity, source_service, destination_service,
-                event_time, severity, reason, rule_triggered, detection_latency_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                event_time, severity, reason, rule_triggered, detection_latency_ms,
+                ordering_status, related_events
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert["alert_id"],
@@ -209,6 +311,8 @@ def process_and_store_event(
                 alert["reason"],
                 alert["rule_triggered"],
                 alert["detection_latency_ms"],
+                alert["ordering_status"],
+                json.dumps(alert["related_events"]),
             ),
         )
     if alerts:
@@ -220,14 +324,23 @@ def list_threat_alerts(conn: sqlite3.Connection, limit: int = 100) -> list[dict[
     rows = conn.execute(
         """
         SELECT alert_id, user_identity, source_service, destination_service,
-               event_time, severity, reason, rule_triggered, detection_latency_ms, acknowledged
+               event_time, severity, reason, rule_triggered, detection_latency_ms,
+               ordering_status, related_events, acknowledged
         FROM threat_alerts
         ORDER BY event_time DESC
         LIMIT ?
         """,
         (limit,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["related_events"] = json.loads(item["related_events"] or "[]")
+        except Exception:
+            item["related_events"] = []
+        out.append(item)
+    return out
 
 
 def build_service_graph_summary(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -256,6 +369,7 @@ def build_service_graph_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "allowed_topology": {k: sorted(v) for k, v in ALLOWED_SERVICE_EDGES.items()},
         "observed_edges": edges,
+        "timing_policy": get_timing_policy(),
     }
 
 
@@ -290,6 +404,8 @@ def evaluate_synthetic_dataset(dataset_path: Path | None = None) -> dict[str, An
             event_time=rec["event_time"],
             key_status=rec.get("key_status", "ACTIVE"),
             reason_code=rec.get("reason_code", ""),
+            event_id=rec.get("event_id", f"syn-{uuid.uuid4().hex[:8]}"),
+            clock_offset_seconds=float(rec.get("clock_offset_seconds", 0.0)),
         )
         alerts = engine.evaluate_event(evt)
         predicted_malicious = len(alerts) > 0

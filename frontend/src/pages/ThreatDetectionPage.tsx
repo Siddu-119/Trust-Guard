@@ -26,6 +26,8 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
   const [simResource, setSimResource] = useState("keys");
   const [simAction, setSimAction] = useState("rotate");
   const [simDevStatus, setSimDevStatus] = useState("ACTIVE");
+  const [simClockOffset, setSimClockOffset] = useState("0");
+  const [timingPolicy, setTimingPolicy] = useState<any>(null);
 
   const loadData = async () => {
     try {
@@ -35,6 +37,7 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
       ]);
       setAlerts(al);
       setGraph(gr);
+      setTimingPolicy(gr.timing_policy ?? null);
     } catch (err: any) {
       setFeedback({ type: "err", msg: err.message });
     }
@@ -79,6 +82,7 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
           resource: simResource,
           action: simAction,
           decision: "DENY",
+          clock_offset_seconds: Number(simClockOffset) || 0,
         },
       });
       setFeedback({
@@ -172,6 +176,19 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
         </div>
       )}
 
+      {/* Clock-Skew & Ordering Policy */}
+      {timingPolicy && (
+        <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-300 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span className="font-semibold text-cyan-300">Clock-Skew & Out-of-Order Policy: </span>
+            {timingPolicy.policy_summary}
+          </div>
+          <span className="font-mono text-slate-400">
+            Range: ±{timingPolicy.supported_clock_skew_seconds}s
+          </span>
+        </div>
+      )}
+
       {/* Simulator + Service Graph */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <form
@@ -244,12 +261,21 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
               className="px-2 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white"
             />
           </div>
-          <button
-            type="submit"
-            className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium"
-          >
-            Evaluate Event
-          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-400">Clock Offset (sec):</label>
+            <input
+              type="number"
+              value={simClockOffset}
+              onChange={(e) => setSimClockOffset(e.target.value)}
+              className="w-28 px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white font-mono"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium"
+            >
+              Evaluate Event
+            </button>
+          </div>
         </form>
 
         <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
@@ -302,12 +328,12 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-950 text-slate-400 uppercase font-mono">
               <tr>
-                <th className="px-4 py-3">Time</th>
+                <th className="px-4 py-3">Time / Ordering</th>
                 <th className="px-4 py-3">User Identity</th>
                 <th className="px-4 py-3">Source → Destination</th>
                 <th className="px-4 py-3">Severity</th>
                 <th className="px-4 py-3">Rule Triggered</th>
-                <th className="px-4 py-3">Reason</th>
+                <th className="px-4 py-3">Reason & Related Events</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
@@ -320,8 +346,9 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
               ) : (
                 alerts.map((a) => (
                   <tr key={a.alert_id}>
-                    <td className="px-4 py-3 font-mono text-slate-400">
-                      {new Date(a.event_time).toLocaleTimeString()}
+                    <td className="px-4 py-3 font-mono text-slate-400 space-y-1">
+                      <div>{new Date(a.event_time).toLocaleTimeString()}</div>
+                      {a.ordering_status && <StatusBadge value={a.ordering_status} />}
                     </td>
                     <td className="px-4 py-3 text-white font-medium">{a.user_identity}</td>
                     <td className="px-4 py-3 font-mono text-cyan-300">
@@ -331,7 +358,14 @@ export const ThreatDetectionPage: React.FC<Props> = ({ token, deviceId }) => {
                       <StatusBadge value={a.severity} />
                     </td>
                     <td className="px-4 py-3 font-mono text-amber-300">{a.rule_triggered}</td>
-                    <td className="px-4 py-3 text-slate-300">{a.reason}</td>
+                    <td className="px-4 py-3 text-slate-300">
+                      <div>{a.reason}</div>
+                      {a.related_events && a.related_events.length > 0 && (
+                        <div className="text-[11px] font-mono text-slate-500 mt-0.5">
+                          events: {a.related_events.join(", ")}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}

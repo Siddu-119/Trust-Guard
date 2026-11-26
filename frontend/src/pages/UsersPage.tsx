@@ -299,7 +299,12 @@ export const UsersPage: React.FC<Props> = ({ token, deviceId }) => {
           <div className="grid grid-cols-2 gap-2">
             <select
               value={chkUserId}
-              onChange={(e) => setChkUserId(e.target.value)}
+              onChange={(e) => {
+                const nextUid = e.target.value;
+                setChkUserId(nextUid);
+                const firstDev = devices.find((d) => d.owner_id === nextUid);
+                setChkDeviceId(firstDev ? firstDev.device_id : "");
+              }}
               className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
             >
               {users.map((u) => (

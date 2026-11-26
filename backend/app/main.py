@@ -51,7 +51,11 @@ from .keys import (
 )
 from .messaging import (
     create_signed_encrypted_envelope,
+    list_delivery_attempts,
     list_messages_for_user,
+    list_sessions_for_user,
+    resume_resumable_session,
+    start_resumable_session,
     verify_and_deliver_envelope,
 )
 from .nodes import list_service_nodes, set_node_status, sync_node
@@ -59,6 +63,7 @@ from .threat_detection import (
     SecurityEventInput,
     build_service_graph_summary,
     evaluate_synthetic_dataset,
+    get_timing_policy,
     list_threat_alerts,
     process_and_store_event,
 )
@@ -116,6 +121,7 @@ class RotateKeyRequest(BaseModel):
 
 class VerifyKeyUsageRequest(BaseModel):
     key_id: str
+    node_id: str | None = None
 
 
 class RevokeKeyRequest(BaseModel):
@@ -138,10 +144,15 @@ class RevokeDeviceRequest(BaseModel):
     reason: str = "Reported lost / compromised"
 
 
+class StartSessionRequest(BaseModel):
+    recipient_id: str
+
+
 class SendMessageRequest(BaseModel):
     recipient_id: str
     plaintext: str
     message_id: str | None = None
+    session_id: str | None = None
 
 
 class DeliverEnvelopeRequest(BaseModel):
@@ -160,6 +171,8 @@ class SimulateThreatRequest(BaseModel):
     decision: str = "DENY"
     key_status: str = "ACTIVE"
     reason_code: str = ""
+    event_time: str | None = None
+    clock_offset_seconds: float = 0.0
 
 
 class NodeStatusRequest(BaseModel):
@@ -659,7 +672,12 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         settings: Settings = Depends(get_cfg),
     ) -> dict[str, Any]:
         return verify_key_usage(
-            conn, settings, key_id=body.key_id, actor_id=ctx.user_id, actor_role=ctx.role
+            conn,
+            settings,
+            key_id=body.key_id,
+            actor_id=ctx.user_id,
+            actor_role=ctx.role,
+            node_id=body.node_id,
         )
 
     @app.post("/api/keys/{key_id}/revoke")
@@ -754,6 +772,51 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         enforce_server_permission(conn, ctx, resource="messages", action="read")
         return list_messages_for_user(conn, settings, user_id=ctx.user_id, role=ctx.role)
 
+    @app.get("/api/messages/sessions")
+    def get_sessions(
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> list[dict[str, Any]]:
+        enforce_server_permission(conn, ctx, resource="messages", action="read")
+        return list_sessions_for_user(conn, user_id=ctx.user_id, role=ctx.role)
+
+    @app.post("/api/messages/sessions")
+    def create_session_endpoint(
+        body: StartSessionRequest,
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> dict[str, Any]:
+        enforce_server_permission(conn, ctx, resource="messages", action="write", destination_service="node-b")
+        return start_resumable_session(
+            conn,
+            initiator_id=ctx.user_id,
+            initiator_device_id=ctx.device_id,
+            recipient_id=body.recipient_id,
+        )
+
+    @app.post("/api/messages/sessions/{session_id}/resume")
+    def resume_session_endpoint(
+        session_id: str,
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> dict[str, Any]:
+        enforce_server_permission(conn, ctx, resource="messages", action="read")
+        return resume_resumable_session(
+            conn,
+            session_id=session_id,
+            actor_id=ctx.user_id,
+            actor_role=ctx.role,
+            actor_device_id=ctx.device_id,
+        )
+
+    @app.get("/api/messages/delivery-attempts")
+    def get_delivery_attempts(
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> list[dict[str, Any]]:
+        enforce_server_permission(conn, ctx, resource="messages", action="read")
+        return list_delivery_attempts(conn, user_id=ctx.user_id, role=ctx.role)
+
     @app.post("/api/messages/create-envelope")
     def create_envelope_endpoint(
         body: SendMessageRequest,
@@ -766,10 +829,12 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
             conn,
             settings,
             sender_id=ctx.user_id,
+            sender_role=ctx.role,
             sender_device_id=ctx.device_id,
             recipient_id=body.recipient_id,
             plaintext=body.plaintext,
             message_id=body.message_id,
+            session_id=body.session_id,
         )
 
     @app.post("/api/messages/deliver-envelope")
@@ -800,10 +865,12 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
             conn,
             settings,
             sender_id=ctx.user_id,
+            sender_role=ctx.role,
             sender_device_id=ctx.device_id,
             recipient_id=body.recipient_id,
             plaintext=body.plaintext,
             message_id=body.message_id,
+            session_id=body.session_id,
         )
         delivery = verify_and_deliver_envelope(
             conn,
@@ -817,6 +884,14 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # Threat Detection (Deterministic Rules + Graph Analysis)
     # ------------------------------------------------------------------
+
+    @app.get("/api/threats/timing-policy")
+    def get_threat_timing_policy(
+        ctx: AuthContext = Depends(get_auth_context),
+        conn: sqlite3.Connection = Depends(get_db),
+    ) -> dict[str, Any]:
+        enforce_server_permission(conn, ctx, resource="threat", action="read")
+        return get_timing_policy()
 
     @app.get("/api/threats/alerts")
     def get_threat_alerts(
@@ -842,7 +917,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(get_db),
     ) -> dict[str, Any]:
         enforce_server_permission(conn, ctx, resource="threat", action="write")
-        ts = utc_now_iso()
+        ts = body.event_time or utc_now_iso()
         alerts = process_and_store_event(
             conn,
             SecurityEventInput(
@@ -858,6 +933,7 @@ def create_app(custom_settings: Settings | None = None) -> FastAPI:
                 event_time=ts,
                 key_status=body.key_status,
                 reason_code=body.reason_code,
+                clock_offset_seconds=body.clock_offset_seconds,
             ),
         )
         record_audit_event(
