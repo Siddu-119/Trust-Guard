@@ -227,9 +227,9 @@ def build_pdf(output_path: Path, video_url: str) -> None:
 
     points = [
         "<b>Real Post-Quantum Cryptography:</b> Uses standardized NIST algorithms via <i>pqcrypto 1.0.0</i> (ML-KEM-768 for key exchange, ML-DSA-65 for signatures) and <i>cryptography 50.0.2</i> (HKDF-SHA256 + AES-256-GCM). No custom crypto or simulated checks.",
-        "<b>Per-Step Ephemeral Forward Secrecy:</b> Each message and each step of a resumed session generates a one-time ML-KEM-768 keypair in RAM. Once delivered, the ephemeral secret key is overwritten with zeros and deleted.",
+        "<b>Transport Forward Secrecy:</b> Each message and resumed session step uses a one-time ML-KEM-768 keypair in RAM. Upon delivery, the mutable key buffer is zeroed (best-effort in Python; immutable <i>bytes</i> copies remain subject to GC).",
         "<b>Recoverable Key Rotation &amp; Cutoff:</b> Key rotations move from <i>PENDING</i> to <i>COMMITTED</i> in SQLite WAL. If the server crashes mid-rotation, startup recovery verifies and finishes or rolls back the pending key, while old keys past the grace window are rejected.",
-        "<b>Cross-Node Revocation &amp; Session Binding:</b> Device and key revocations propagate across Service Nodes A, B, and C with measured latency (ms) and catch-up sync after outages. Resumable sessions lock to the original user, device, and peer.",
+        "<b>Multi-Node Revocation &amp; Session Binding:</b> Device and key revocations propagate across 3 SQLite-simulated nodes (A, B, C) with measured local enforcement latency and catch-up sync after simulated outages. Resumable sessions lock to user, device, and peer.",
         "<b>Deterministic Detection (No AI/ML):</b> Uses 7 explainable rules and a directed service graph. Out-of-order events within +-300 seconds are re-sorted by timestamp and flagged if ordering is uncertain.",
     ]
     bstyle = ParagraphStyle("List1", fontName="Helvetica", fontSize=8.2, leading=11.0, textColor=INK)
@@ -251,7 +251,7 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         [
             Paragraph("Backend &amp; DB", tc),
             Paragraph("Python 3.14, FastAPI 0.165.0, Pydantic 2.14.4, SQLite (WAL), per-request DB connections", tc),
-            Paragraph("Revocation 1.55 ms med (1.26-2.53 ms, 0.05-0.09 ms/node); 32 concurrent calls 0 errors", tc),
+            Paragraph("Local sync on 3 SQLite-simulated nodes: 1.55 ms med (1.26-2.53 ms; 0.05-0.09 ms/node write); 32 concurrent calls 0 errors", tc),
         ],
         [
             Paragraph("Cryptography", tc),
@@ -261,7 +261,7 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         [
             Paragraph("Threat Engine", tc),
             Paragraph("Pure Python rules + directed service graph + bisect window sorting (+-300s timing range)", tc),
-            Paragraph("1,058 logs: F1=0.9778 (P=1.0, R=0.9565), med alert 0.0014 ms, 0.0 FP/1k", tc),
+            Paragraph("Author-crafted 1,058-event synthetic benchmark: F1=0.9778 (P=1.0, R=0.9565), med alert 0.0014 ms, 0.0 FP/1k", tc),
         ],
         [
             Paragraph("Frontend &amp; Tests", tc),
@@ -302,7 +302,7 @@ def build_pdf(output_path: Path, video_url: str) -> None:
 
     y = _heading(c, y, "1. Protected Assets")
     assets = [
-        "<b>Confidential Messages &amp; Session Secrets:</b> Plaintext payloads encrypted with ephemeral ML-KEM-768 shared secrets and AES-256-GCM; ephemeral RAM keys are zeroized right after delivery.",
+        "<b>Confidential Messages &amp; Session Secrets:</b> Plaintext payloads encrypted on transport with ephemeral ML-KEM-768 shared secrets + AES-256-GCM; mutable RAM buffers are zeroed best-effort in Python after delivery (delivered inbox snapshots use separate at-rest sealing).",
         "<b>Identity &amp; Transport Keys:</b> ML-DSA-65 and ML-KEM-768 private keys wrapped at rest with AES-256-GCM under <i>TRUSTGUARD_MASTER_KEY</i>.",
         "<b>User Accounts, Devices &amp; Sessions:</b> scrypt password hashes, HMAC-SHA256 bearer tokens, active/revoked device status, and peer-bound resumable sessions.",
         "<b>Audit Trail &amp; Key Backups:</b> Hash-chained <i>audit_logs</i> starting at GENESIS, plus AES-256-GCM encrypted and ML-DSA-65 signed backups.",
@@ -320,8 +320,8 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         [Paragraph("Attacker / Scenario", th), Paragraph("How They Attack", th), Paragraph("Control Implemented in TrustGuard", th), Paragraph("Test", th)],
         [
             Paragraph("<b>Passive Eavesdropper / Quantum Threat</b>", t_cel),
-            Paragraph("Captures ciphertexts today to decrypt later, or steals identity keys later.", t_cel),
-            Paragraph("ML-KEM-768 + AES-256-GCM; fresh ephemeral KEM keypair per step is zeroized in RAM after delivery so old traffic stays unreadable.", t_cel),
+            Paragraph("Captures transport ciphertexts today, or steals identity signing keys later.", t_cel),
+            Paragraph("Transport forward secrecy via per-step ephemeral ML-KEM-768 + AES-256-GCM (best-effort Python buffer clear; excludes stored inbox snapshots).", t_cel),
             Paragraph("test_18", t_cel),
         ],
         [
@@ -377,21 +377,21 @@ def build_pdf(output_path: Path, video_url: str) -> None:
     y = _heading(c, y, "3. Assumptions and Honest Limitations")
     gap = 4 * mm
     cw = (CONTENT_W - gap) / 2
-    bh = 56 * mm
+    bh = 62 * mm
     for idx, (ctitle, cbody) in enumerate(
         [
             (
                 "Security Assumptions",
                 "<b>1. Environment Secrets:</b> <i>TRUSTGUARD_MASTER_KEY</i> and <i>TRUSTGUARD_TOKEN_SECRET</i> are kept in local env vars and never committed.<br/>"
-                "<b>2. Short RAM Window:</b> Server RAM is not dumped during the millisecond between ephemeral key creation and zeroization.<br/>"
+                "<b>2. Short RAM Window:</b> Server RAM is not dumped between ephemeral key generation and best-effort Python buffer clearing.<br/>"
                 "<b>3. Clock Skew Bound:</b> Node clocks stay within <b>+-300 seconds</b>; larger offsets trigger <i>RULE_CLOCK_SKEW_ANOMALY</i>.<br/>"
                 "<b>4. Server Enforcement:</b> Every permission, cutoff, and device check runs on the FastAPI backend.",
             ),
             (
                 "Known Limitations (Prototype Scope)",
-                "<b>1. Single Process &amp; Mock Nodes:</b> Ephemeral RAM keys live in one Python process; Nodes A, B, and C are simulated in SQLite rather than separate servers.<br/>"
-                "<b>2. Inbox Reload Storage:</b> After ephemeral transport decryption, <i>inbox_sealed_b64</i> is sealed with <i>TRUSTGUARD_MASTER_KEY</i> so recipients can reload their inbox.<br/>"
-                "<b>3. Slow-Probe Boundary:</b> 120s/180s sliding windows keep false alerts at 0.0/1k, so probes hours apart are missed (2 test cases in dataset).<br/>"
+                "<b>1. Transport-Only Forward Secrecy:</b> Mutable <i>bytearray</i> buffers clear best-effort in Python (immutable <i>bytes</i> copies follow GC); <i>inbox_sealed_b64</i> persists under <i>TRUSTGUARD_MASTER_KEY</i> for inbox reload.<br/>"
+                "<b>2. Audit-Chain Tail Truncation:</b> The SHA-256 chain lacks an external WORM anchor or signed head checkpoint, so deleting trailing rows cannot be detected without external state.<br/>"
+                "<b>3. Mock Nodes &amp; Slow Probes:</b> Nodes A/B/C are simulated in SQLite WAL; 120s/180s sliding windows miss slow probes hours apart (2 dataset FN).<br/>"
                 "<b>4. Software Key Wrap:</b> Uses software HKDF/AES-GCM instead of a hardware HSM or TPM.",
             ),
         ]
@@ -403,13 +403,13 @@ def build_pdf(output_path: Path, video_url: str) -> None:
         c.setLineWidth(0.7)
         c.rect(cx, cy, cw, bh, fill=1, stroke=1)
         c.setFillColor(ACCENT)
-        c.setFont("Helvetica-Bold", 8.5)
-        c.drawString(cx + 3 * mm, y - 4.5 * mm, ctitle)
-        p = Paragraph(cbody, ParagraphStyle("Lim", fontName="Helvetica", fontSize=7.6, leading=10.1, textColor=INK))
-        _, ph = p.wrap(cw - 6 * mm, bh - 7 * mm)
-        p.drawOn(c, cx + 3 * mm, y - 6.5 * mm - ph)
+        c.setFont("Helvetica-Bold", 8.3)
+        c.drawString(cx + 3 * mm, y - 4.3 * mm, ctitle)
+        p = Paragraph(cbody, ParagraphStyle("Lim", fontName="Helvetica", fontSize=7.25, leading=9.5, textColor=INK))
+        _, ph = p.wrap(cw - 6 * mm, bh - 6 * mm)
+        p.drawOn(c, cx + 3 * mm, y - 6.0 * mm - ph)
 
-    y -= bh + 4.5 * mm
+    y -= bh + 3.5 * mm
     bot_p = Paragraph(
         f"<b>5-Min Demo Video:</b> <code>{video_url}</code> &nbsp;|&nbsp; "
         "<b>Automated Suite:</b> <code>pytest backend/tests/test_trustguard.py -v</code> (22/22 Pass)",

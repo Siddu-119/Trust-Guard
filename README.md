@@ -89,7 +89,7 @@ TrustGuard uses **only standardized, peer-reviewed libraries** — never custom 
 
 1. **Key Encapsulation (`ML-KEM-768`, NIST FIPS 203)** via `pqcrypto.kem.ml_kem_768`:
    - Generates an ephemeral `(pk, sk)` pair in volatile RAM (`EphemeralSessionManager`) for each message and each step of a resumed session.
-   - Encapsulates a 32-byte shared secret, derives a unique message key via `HKDF-SHA256` bound to `sender_id`, `recipient_id`, `message_id`, `session_id`, and `session_step`, and immediately **zeroizes and evicts** the ephemeral secret key buffer upon decapsulation.
+   - Encapsulates a 32-byte shared secret, derives a unique message key via `HKDF-SHA256` bound to `sender_id`, `recipient_id`, `message_id`, `session_id`, and `session_step`, providing **transport forward secrecy** (the mutable `bytearray` key buffer is overwritten with zeros on delivery; immutable Python `bytes` copies remain subject to Python GC).
 2. **Authenticated Encryption (`AES-256-GCM`)** via `cryptography`:
    - Uses random 12-byte nonces (`os.urandom(12)`) and canonical JSON Associated Authenticated Data (AAD) binding sender, device, recipient, session, signing key version, and timestamp.
 3. **Digital Signatures (`ML-DSA-65`, NIST FIPS 204)** via `pqcrypto.sign.ml_dsa_65`:
@@ -133,12 +133,12 @@ The threat engine ([threat_detection.py](backend/app/threat_detection.py)) is **
 
 ### Labelled Dataset Evaluation ([synthetic_security_logs.json](backend/data/synthetic_security_logs.json))
 
-Evaluated deterministically across **1,058 labelled synthetic events** (`1,012` benign, `46` malicious):
+Evaluated deterministically across an **author-crafted 1,058-event synthetic benchmark** (`1,012` benign, `46` malicious):
 
 | Metric | Measured Result |
 | :--- | :--- |
 | **Grace Period (Key Rotation Cutoff)** | `1` previous version (`TRUSTGUARD_KEY_GRACE_VERSIONS=1`; token TTL `8h`) |
-| **Revocation Time (Nodes A/B/C + Audit)** | `1.55 ms` median (`1.26–2.53 ms` end-to-end; `0.05–0.09 ms` per-node update) |
+| **Revocation Time (3 SQLite-Simulated Nodes + Audit)** | `1.55 ms` median (`1.26–2.53 ms` local end-to-end; `0.05–0.09 ms` per-node write; no network RPC) |
 | **Timing Range (Clock Skew / Out-of-Order)** | `±300s` (`±5 min`; `>= 1s` lag flagged `OUT_OF_ORDER_UNCERTAIN`) |
 | **Precision / Recall / F1 Score** | `1.0` / `0.9565` / **`0.9778`** (`44 TP`, `0 FP`, `2 FN` slow-recon boundary probes) |
 | **Median Time to Alert** | `0.0014 ms` |
@@ -301,9 +301,10 @@ cd frontend && npm run build
 ## Known Limitations
 
 1. **Single-Process Ephemeral Store & Simulated Nodes**: Ephemeral session keys live in single-process Python RAM (`EphemeralSessionManager`), and Service Nodes A/B/C are simulated via persistent SQLite tables rather than separate networked containers. Multi-worker execution (`--workers > 1`) is not supported without a shared volatile key store.
-2. **Inbox Persistence Trade-off**: After ephemeral forward-secret decryption succeeds at the delivery gate, `inbox_sealed_b64` is stored under `TRUSTGUARD_MASTER_KEY` so recipients can view delivered messages across page reloads. A pure client-device deployment would store decrypted messages only on recipient devices.
-3. **Slow-Recon Window Boundary**: Deterministic sliding windows (`120s` fan-out, `180s` repeated denials) avoid benign false positives, meaning low-rate probes spaced hours apart (`stealth_slow_recon` in the synthetic dataset) are not flagged.
-4. **Master Key Management**: `TRUSTGUARD_MASTER_KEY` is provided via environment variables rather than a hardware HSM or OS TPM.
+2. **Transport-Only Forward Secrecy & Best-Effort Python Zeroization**: After ephemeral transport decryption succeeds at the delivery gate, `inbox_sealed_b64` is stored under `TRUSTGUARD_MASTER_KEY` so recipients can reload delivered messages in the UI. In addition, clearing mutable `bytearray` key buffers in Python is best-effort because immutable `bytes` intermediates are managed by Python's allocator/GC rather than `mlock`/`memset_s`.
+3. **Audit-Chain Tail Truncation**: `audit_logs` uses an internal SHA-256 hash chain from `GENESIS`, which detects mid-chain edits or deletions, but without an external WORM anchor or periodic signed head checkpoint, deletion of trailing rows at the end of the table cannot be detected from the database alone.
+4. **Slow-Recon Window Boundary**: Deterministic sliding windows (`120s` fan-out, `180s` repeated denials) keep benign false positives at `0.0/1k` on the author-crafted benchmark, meaning low-rate probes spaced hours apart (`stealth_slow_recon`) are not flagged.
+5. **Master Key Management**: `TRUSTGUARD_MASTER_KEY` is provided via environment variables rather than a hardware HSM or OS TPM.
 
 ---
 
