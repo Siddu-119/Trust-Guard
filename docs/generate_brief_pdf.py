@@ -426,7 +426,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate TrustGuard 2-Page Project Brief PDF")
     parser.add_argument(
         "--video-url",
-        default="[Add your 5-minute unlisted YouTube / Google Drive link here]",
+        default="https://youtu.be/4987sNPe3O4",
         help="Public/unlisted 5-minute demo walkthrough video URL",
     )
     parser.add_argument(
