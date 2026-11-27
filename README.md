@@ -359,3 +359,7 @@ cd frontend && npm run build
             ├── RecoveryBackupsPage.tsx
             └── SettingsPage.tsx
 ```
+
+
+
+Youtube Link: https://youtu.be/4987sNPe3O4
